@@ -36,6 +36,8 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
+  char *mem;  // for use in trap = PGFLT
+  uint a;     // for use in trap = PGFLT
   if(tf->trapno == T_SYSCALL){
     if(proc->killed)
       exit();
@@ -77,7 +79,19 @@ trap(struct trapframe *tf)
             cpu->id, tf->cs, tf->eip);
     lapiceoi();
     break;
-   
+  //added for assignment 3: handle lazy allocation
+    case T_PGFLT:
+          a = PGROUNDDOWN(rcr2());
+          mem = kalloc();
+          if (mem == 0)
+          {
+            cprintf("out of memory - bad bad bad");
+            return;
+          }
+          memset(mem, 0, PGSIZE);
+          mappages(proc->pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
+          return;
+
   //PAGEBREAK: 13
   default:
     if(proc == 0 || (tf->cs&3) == 0){

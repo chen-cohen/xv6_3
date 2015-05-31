@@ -42,8 +42,10 @@ sys_getpid(void)
   return proc->pid;
 }
 
-int
-sys_sbrk(void)
+
+/* making change to sys_sbrk
+ * part of task 2 in assignment 3 */
+int sys_sbrk(void)
 {
   int addr;
   int n;
@@ -51,8 +53,15 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = proc->sz;
-  if(growproc(n) < 0)
-    return -1;
+  proc->sz += n;
+  if (growproc(n) < 0)
+  {
+    cprintf("deallocating\n");
+    deallocuvm(proc->pgdir, addr, proc->sz);
+  }
+  // this remove allocation from sbrk - make it lazy
+  //if(growproc(n) < 0)
+  //  return -1;
   return addr;
 }
 
