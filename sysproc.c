@@ -54,11 +54,9 @@ int sys_sbrk(void)
     return -1;
   addr = proc->sz;
   proc->sz += n;
-  if (growproc(n) < 0)
-  {
-    cprintf("deallocating\n");
-    deallocuvm(proc->pgdir, addr, proc->sz);
-  }
+  //no need to lazy dealloc
+  if (n < 0)
+    growproc(n);
   // this remove allocation from sbrk - make it lazy
   //if(growproc(n) < 0)
   //  return -1;
