@@ -52,14 +52,24 @@ int sys_sbrk(void)
 
   if(argint(0, &n) < 0)
     return -1;
+  // protect kernal memory
+  if((proc->sz + n) >= KERNBASE)
+    return 0;
   addr = proc->sz;
   proc->sz += n;
   //no need to lazy dealloc
-  if (n < 0)
-    growproc(n);
-  // this remove allocation from sbrk - make it lazy
-  //if(growproc(n) < 0)
-  //  return -1;
+  if (n < 0) {
+    //growproc(n);
+    //proc->sz += n;
+    if ((deallocuvm(proc->pgdir, addr, addr + n)) == 0)
+      return -1;
+  }
+  else {
+    // this remove allocation from sbrk - make it lazy
+    //if(growproc(n) < 0)
+    //  return -1;
+    //proc->sz += n;
+  }
   return addr;
 }
 

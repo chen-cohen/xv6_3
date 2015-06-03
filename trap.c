@@ -11,6 +11,7 @@
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
+extern pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc);
 struct spinlock tickslock;
 uint ticks;
 
@@ -38,6 +39,8 @@ trap(struct trapframe *tf)
 {
   char *mem;  // for use in trap = PGFLT
   uint a;     // for use in trap = PGFLT
+  pte_t* pte_user;
+
   if(tf->trapno == T_SYSCALL){
     if(proc->killed)
       exit();
@@ -81,17 +84,24 @@ trap(struct trapframe *tf)
     break;
   //added for assignment 3: handle lazy allocation
     case T_PGFLT:
-          a = PGROUNDDOWN(rcr2());
+        pte_user = walkpgdir(proc->pgdir,(void *)rcr2(),0);
+        if (!pte_user || !(*pte_user & PTE_P)) {
           mem = kalloc();
-          if (mem == 0)
-          {
-            cprintf("out of memory - bad bad bad");
-            return;
+          if (mem == 0) {
+              cprintf("out of memory - bad i kill u now");
+              cprintf("pid %d %s: trap %d err %d on cpu %d "
+                              "eip 0x%x addr 0x%x--kill proc\n",
+                      proc->pid, proc->name, tf->trapno, tf->err, cpu->id, tf->eip,
+                      rcr2());
+              proc->killed = 1;
+              return;
           }
           memset(mem, 0, PGSIZE);
-          mappages(proc->pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
+          a = PGROUNDDOWN(rcr2());
+          cprintf("doing lazy allocation\n");
+          mappages(proc->pgdir, (char *) a, PGSIZE, v2p(mem), PTE_W | PTE_U);
           return;
-
+          }
   //PAGEBREAK: 13
   default:
     if(proc == 0 || (tf->cs&3) == 0){
