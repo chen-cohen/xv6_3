@@ -9,6 +9,7 @@
 
 extern char data[];  // defined by kernel.ld
 struct segdesc gdt[NSEGS];
+void init_tlb();
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -157,6 +158,7 @@ kvmalloc(struct cpu *c)
 void
 switchkvm(struct cpu *c)
 {
+  init_tlb();
   lcr3(v2p(c->kpgdir));   // switch to the kernel page table
 }
 
@@ -165,6 +167,7 @@ void
 switchuvm(struct proc *p)
 {
   pushcli();
+  init_tlb();
   cpu->gdt[SEG_TSS] = SEG16(STS_T32A, &cpu->ts, sizeof(cpu->ts)-1, 0);
   cpu->gdt[SEG_TSS].s = 0;
   cpu->ts.ss0 = SEG_KDATA << 3;
@@ -172,7 +175,7 @@ switchuvm(struct proc *p)
   ltr(SEG_TSS << 3);
   if(p->pgdir == 0)
     panic("switchuvm: no pgdir");
-  lcr3(v2p(p->pgdir));  // switch to new address space
+//  lcr3(v2p(p->pgdir));  // switch to new address space
   popcli();
 }
 
@@ -317,10 +320,14 @@ copyuvm(pde_t *pgdir, uint sz)
   if((d = setupkvm()) == 0)
     return 0;
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
-      panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0) {
+      //panic("copyuvm: pte should exist");
+      continue;
+    }
+    if(!(*pte & PTE_P)) {
+      //panic("copyuvm: page not present");
+      continue;
+    }
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -375,6 +382,98 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
     va = va0 + PGSIZE;
   }
   return 0;
+}
+
+int same_pgtab( uint addr1, uint addr2 ) {
+  return PDX( addr1 ) == PDX( addr2 );
+}
+
+void new_addr_tlb( uint addr ) {
+  pte_t *p_entry;
+  pte_t *k_entry;
+
+  if ( addr >= KERNBASE || addr > proc->sz ){
+    cprintf("pid %d %s: cpu %d addr 0x%x--kill proc\n",
+            proc->pid, proc->name, cpu->id, rcr2());
+    proc->killed = 1;
+    return;
+  }
+
+  p_entry = walkpgdir( proc->pgdir, (char *)addr, 0 );
+
+  if ( proc->tf->err == 7 ) {
+    proc->tf->trapno = 14;	//T_PGFLT
+    return;
+  }
+
+  if ( !p_entry || !(*p_entry & PTE_P) ) {
+    char * mem;
+    uint a;
+
+    a = PGROUNDDOWN( rcr2() );
+
+    mem = kalloc();
+    if(mem == 0){
+	cprintf("allocuvm out of memory\n");
+	proc->killed = 1;
+	return;
+    }
+    memset(mem, 0, PGSIZE);
+    mappages(proc->pgdir, (void *)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
+    p_entry = walkpgdir( proc->pgdir, (char *)addr, 0 );
+  }
+
+  k_entry = walkpgdir( cpu->kpgdir, (char *)addr, 1 );
+  *k_entry = *p_entry;
+
+  if (  cpu->tlb.addr1 && ( same_pgtab( addr, cpu->tlb.addr1 ) ) ) {
+    return;
+  }
+  if (  cpu->tlb.addr2 && ( same_pgtab( addr, cpu->tlb.addr2 ) ) ) {
+    return;
+  }
+
+  if ( cpu->tlb.addr2 ) {
+    pde_t *pde;
+    pte_t *pgtab;
+
+    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr2 ) ];
+    if(*pde & PTE_P) {
+      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+      kfree ( (char *)pgtab );
+    }
+    *pde = 0;
+  }
+  cpu->tlb.addr2 = cpu->tlb.addr1;
+  cpu->tlb.addr1 = addr;
+  cpu->tlb.count = ( cpu->tlb.addr2 != 0 ? 2 : 1 );
+}
+
+void init_tlb() {
+  pde_t *pde;
+  pte_t *pgtab;
+
+  /* free the pgtable */
+  if ( cpu->tlb.count == 2 ) {
+    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr2 ) ];
+    if(*pde & PTE_P) {
+      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+      kfree ( (char *)pgtab );
+    }
+    *pde = 0;
+  }/* free the pgtable */
+  if ( cpu->tlb.count > 0 ) {
+    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr1 ) ];
+    if(*pde & PTE_P) {
+      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+      kfree ( (char *)pgtab );
+    }
+    *pde = 0;
+  }
+
+  cpu->tlb.count = 0;
+  cpu->tlb.addr1 = 0;
+  cpu->tlb.addr2 = 0;
 }
 
 //PAGEBREAK!

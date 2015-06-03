@@ -1,6 +1,12 @@
 // Segments in proc->gdt.
 #define NSEGS     7
 
+struct tlb_tbl {
+  uint addr1;
+  uint addr2;
+  int  count;
+};
+
 // Per-CPU state
 struct cpu {
   uchar id;                    // Local APIC ID; index into cpus[] below
@@ -15,6 +21,7 @@ struct cpu {
   // Cpu-local storage variables; see below
   struct cpu *cpu;
   struct proc *proc;           // The currently-running process.
+  struct tlb_tbl tlb;	       // cpu TLB.
 };
 
 extern struct cpu cpus[NCPU];

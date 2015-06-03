@@ -77,9 +77,26 @@ trap(struct trapframe *tf)
             cpu->id, tf->cs, tf->eip);
     lapiceoi();
     break;
+
+
+
+
    
   //PAGEBREAK: 13
+  case T_PGFLT:
+    if ( proc ) {
+      new_addr_tlb( rcr2() );
+      lapiceoi();
+      break;
+    } else {
+      cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
+              tf->trapno, cpu->id, tf->eip, rcr2());
+      panic("trap");
+      break;
+    }
+
   default:
+    cprintf("default trap\n");
     if(proc == 0 || (tf->cs&3) == 0){
       // In kernel, it must be our mistake.
       cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
