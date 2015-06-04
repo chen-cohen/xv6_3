@@ -6,10 +6,41 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 extern char data[];  // defined by kernel.ld
 struct segdesc gdt[NSEGS];
-void init_tlb();
+void refreshTlbContext();
+
+
+void initTlbContext(){
+  cpu->tlb.num_of_records = DEFAULT_TLB_ENTRY_VALUE;
+  cpu->tlb.origin = DEFAULT_TLB_ENTRY_VALUE;
+  cpu->tlb.redirect = DEFAULT_TLB_ENTRY_VALUE;
+}
+
+void freeSpace(pde_t *pde, pte_t *pte, uint record) {
+  pde = &cpu->kpgdir[PDX(record)];
+  if (*pde & PTE_P) {
+    pte = (pte_t *) p2v(PTE_ADDR(*pde));
+    kfree((char *) pte);
+  }
+  *pde = 0;
+}
+
+void refreshTlbContext() {
+  pte_t *pte = NULL;
+  pde_t *pde = NULL;
+
+  if(cpu->tlb.num_of_records == 1) {
+    freeSpace(pde, pte, cpu->tlb.origin);
+  }
+  if(cpu->tlb.num_of_records == 2) {
+    freeSpace(pde, pte, cpu->tlb.redirect);
+  }
+  initTlbContext();
+}
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -158,7 +189,7 @@ kvmalloc(struct cpu *c)
 void
 switchkvm(struct cpu *c)
 {
-  init_tlb();
+  refreshTlbContext();
   lcr3(v2p(c->kpgdir));   // switch to the kernel page table
 }
 
@@ -167,7 +198,7 @@ void
 switchuvm(struct proc *p)
 {
   pushcli();
-  init_tlb();
+  refreshTlbContext();
   cpu->gdt[SEG_TSS] = SEG16(STS_T32A, &cpu->ts, sizeof(cpu->ts)-1, 0);
   cpu->gdt[SEG_TSS].s = 0;
   cpu->ts.ss0 = SEG_KDATA << 3;
@@ -384,96 +415,63 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-int same_pgtab( uint addr1, uint addr2 ) {
-  return PDX( addr1 ) == PDX( addr2 );
+
+// checks that the address is part of the process and uses that it uses the bottom half page of the kernel
+bool checkNewAddressValidity(uint address){
+  return (address <= proc->sz && address < KERNBASE) ?  true :  false;
 }
 
-void new_addr_tlb( uint addr ) {
-  pte_t *p_entry;
-  pte_t *k_entry;
+bool isMemoryAllocationValid(char *mem) {
+  return (mem == 0) ? false : true;
+}
 
-  if ( addr >= KERNBASE || addr > proc->sz ){
-    cprintf("pid %d %s: cpu %d addr 0x%x--kill proc\n",
-            proc->pid, proc->name, cpu->id, rcr2());
+bool preAllocationCond(pte_t *pte){
+  return (pte && (*pte & PTE_P)) ? false : true;
+}
+
+void runTlb(uint address) {
+
+  pte_t *kte;
+  pte_t *pte;
+
+  if (!checkNewAddressValidity(address)){
+    cprintf("error");
     proc->killed = 1;
     return;
   }
-
-  p_entry = walkpgdir( proc->pgdir, (char *)addr, 0 );
-
-  if ( proc->tf->err == 7 ) {
-    proc->tf->trapno = 14;	//T_PGFLT
-    return;
-  }
-
-  if ( !p_entry || !(*p_entry & PTE_P) ) {
+  pte = walkpgdir( proc->pgdir, (char *)address, 0 );
+  if (preAllocationCond(pte)) {
     char * mem;
-    uint a;
-
-    a = PGROUNDDOWN( rcr2() );
-
     mem = kalloc();
-    if(mem == 0){
-	cprintf("allocuvm out of memory\n");
-	proc->killed = 1;
-	return;
+    if (!isMemoryAllocationValid(mem)){
+      cprintf("Memory can't be allocated");
+      return;
     }
     memset(mem, 0, PGSIZE);
-    mappages(proc->pgdir, (void *)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
-    p_entry = walkpgdir( proc->pgdir, (char *)addr, 0 );
+    mappages(proc->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, v2p(mem), PTE_W|PTE_U);
+    pte = walkpgdir( proc->pgdir, (char *)address, 0 );
   }
 
-  k_entry = walkpgdir( cpu->kpgdir, (char *)addr, 1 );
-  *k_entry = *p_entry;
-
-  if (  cpu->tlb.addr1 && ( same_pgtab( addr, cpu->tlb.addr1 ) ) ) {
+  kte = walkpgdir( cpu->kpgdir, (char *)address, 1 );
+  *kte = *pte;
+  if ((cpu->tlb.origin && (PDX(address) == PDX(cpu->tlb.origin))) ||
+          (cpu->tlb.redirect && (PDX(address) == PDX(cpu->tlb.redirect)))){
     return;
   }
-  if (  cpu->tlb.addr2 && ( same_pgtab( addr, cpu->tlb.addr2 ) ) ) {
-    return;
+  if (cpu->tlb.redirect) {
+    pde_t *pde2 = NULL;
+    pte_t *pte2 = NULL;
+    freeSpace(pde2, pte2, cpu->tlb.origin);
   }
 
-  if ( cpu->tlb.addr2 ) {
-    pde_t *pde;
-    pte_t *pgtab;
-
-    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr2 ) ];
-    if(*pde & PTE_P) {
-      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
-      kfree ( (char *)pgtab );
-    }
-    *pde = 0;
+  cpu->tlb.redirect = cpu->tlb.origin;
+  cpu->tlb.origin = address;
+  if (cpu->tlb.redirect == 0){
+    cpu->tlb.num_of_records  = 1;
   }
-  cpu->tlb.addr2 = cpu->tlb.addr1;
-  cpu->tlb.addr1 = addr;
-  cpu->tlb.count = ( cpu->tlb.addr2 != 0 ? 2 : 1 );
-}
-
-void init_tlb() {
-  pde_t *pde;
-  pte_t *pgtab;
-
-  /* free the pgtable */
-  if ( cpu->tlb.count == 2 ) {
-    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr2 ) ];
-    if(*pde & PTE_P) {
-      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
-      kfree ( (char *)pgtab );
-    }
-    *pde = 0;
-  }/* free the pgtable */
-  if ( cpu->tlb.count > 0 ) {
-    pde = &cpu->kpgdir[ PDX( cpu->tlb.addr1 ) ];
-    if(*pde & PTE_P) {
-      pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
-      kfree ( (char *)pgtab );
-    }
-    *pde = 0;
+  else{
+      cpu->tlb.num_of_records  = 2;
   }
-
-  cpu->tlb.count = 0;
-  cpu->tlb.addr1 = 0;
-  cpu->tlb.addr2 = 0;
 }
 
 //PAGEBREAK!

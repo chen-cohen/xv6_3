@@ -80,17 +80,13 @@ trap(struct trapframe *tf)
 
 
 
-
-   
   //PAGEBREAK: 13
   case T_PGFLT:
-    if ( proc ) {
-      new_addr_tlb( rcr2() );
-      lapiceoi();
+    if (proc) {
+      runTlb(rcr2());  // rcr2() it's the virtual address
       break;
     } else {
-      cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
-              tf->trapno, cpu->id, tf->eip, rcr2());
+      cprintf("got a page fualt");
       panic("trap");
       break;
     }

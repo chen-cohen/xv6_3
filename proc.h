@@ -1,10 +1,15 @@
 // Segments in proc->gdt.
 #define NSEGS     7
 
-struct tlb_tbl {
-  uint addr1;
-  uint addr2;
-  int  count;
+
+
+
+// limiting the number of TLB records
+struct tlb{
+  int num_of_records;
+  uint origin;
+  uint redirect;
+
 };
 
 // Per-CPU state
@@ -19,9 +24,10 @@ struct cpu {
   int intena;                  // Were interrupts enabled before pushcli?
   
   // Cpu-local storage variables; see below
+  struct tlb tlb;
   struct cpu *cpu;
   struct proc *proc;           // The currently-running process.
-  struct tlb_tbl tlb;	       // cpu TLB.
+
 };
 
 extern struct cpu cpus[NCPU];
