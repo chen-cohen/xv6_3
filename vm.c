@@ -6,9 +6,41 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 extern char data[];  // defined by kernel.ld
 struct segdesc gdt[NSEGS];
+void refreshTlbContext();
+
+
+void initTlbContext(){
+  cpu->tlb.num_of_records = DEFAULT_TLB_ENTRY_VALUE;
+  cpu->tlb.origin = DEFAULT_TLB_ENTRY_VALUE;
+  cpu->tlb.redirect = DEFAULT_TLB_ENTRY_VALUE;
+}
+
+void freeSpace(pde_t *pde, pte_t *pte, uint record) {
+  pde = &cpu->kpgdir[PDX(record)];
+  if (*pde & PTE_P) {
+    pte = (pte_t *) p2v(PTE_ADDR(*pde));
+    kfree((char *) pte);
+  }
+  *pde = 0;
+}
+
+void refreshTlbContext() {
+  pte_t *pte = NULL;
+  pde_t *pde = NULL;
+
+  if(cpu->tlb.num_of_records == 1) {
+    freeSpace(pde, pte, cpu->tlb.origin);
+  }
+  if(cpu->tlb.num_of_records == 2) {
+    freeSpace(pde, pte, cpu->tlb.redirect);
+  }
+  initTlbContext();
+}
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -157,6 +189,7 @@ kvmalloc(struct cpu *c)
 void
 switchkvm(struct cpu *c)
 {
+  refreshTlbContext();
   lcr3(v2p(c->kpgdir));   // switch to the kernel page table
 }
 
@@ -165,6 +198,7 @@ void
 switchuvm(struct proc *p)
 {
   pushcli();
+  refreshTlbContext();
   cpu->gdt[SEG_TSS] = SEG16(STS_T32A, &cpu->ts, sizeof(cpu->ts)-1, 0);
   cpu->gdt[SEG_TSS].s = 0;
   cpu->ts.ss0 = SEG_KDATA << 3;
@@ -172,7 +206,7 @@ switchuvm(struct proc *p)
   ltr(SEG_TSS << 3);
   if(p->pgdir == 0)
     panic("switchuvm: no pgdir");
-  lcr3(v2p(p->pgdir));  // switch to new address space
+//  lcr3(v2p(p->pgdir));  // switch to new address space
   popcli();
 }
 
@@ -317,10 +351,14 @@ copyuvm(pde_t *pgdir, uint sz)
   if((d = setupkvm()) == 0)
     return 0;
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
-      panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0) {
+      //panic("copyuvm: pte should exist");
+      continue;
+    }
+    if(!(*pte & PTE_P)) {
+      //panic("copyuvm: page not present");
+      continue;
+    }
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -375,6 +413,65 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
     va = va0 + PGSIZE;
   }
   return 0;
+}
+
+
+// checks that the address is part of the process and uses that it uses the bottom half page of the kernel
+bool checkNewAddressValidity(uint address){
+  return (address <= proc->sz && address < KERNBASE) ?  true :  false;
+}
+
+bool isMemoryAllocationValid(char *mem) {
+  return (mem == 0) ? false : true;
+}
+
+bool preAllocationCond(pte_t *pte){
+  return (pte && (*pte & PTE_P)) ? false : true;
+}
+
+void runTlb(uint address) {
+
+  pte_t *kte;
+  pte_t *pte;
+
+  if (!checkNewAddressValidity(address)){
+    cprintf("error");
+    proc->killed = 1;
+    return;
+  }
+  pte = walkpgdir( proc->pgdir, (char *)address, 0 );
+  if (preAllocationCond(pte)) {
+    char * mem;
+    mem = kalloc();
+    if (!isMemoryAllocationValid(mem)){
+      cprintf("Memory can't be allocated");
+      return;
+    }
+    memset(mem, 0, PGSIZE);
+    mappages(proc->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, v2p(mem), PTE_W|PTE_U);
+    pte = walkpgdir( proc->pgdir, (char *)address, 0 );
+  }
+
+  kte = walkpgdir( cpu->kpgdir, (char *)address, 1 );
+  *kte = *pte;
+  if ((cpu->tlb.origin && (PDX(address) == PDX(cpu->tlb.origin))) ||
+          (cpu->tlb.redirect && (PDX(address) == PDX(cpu->tlb.redirect)))){
+    return;
+  }
+  if (cpu->tlb.redirect) {
+    pde_t *pde2 = NULL;
+    pte_t *pte2 = NULL;
+    freeSpace(pde2, pte2, cpu->tlb.origin);
+  }
+
+  cpu->tlb.redirect = cpu->tlb.origin;
+  cpu->tlb.origin = address;
+  if (cpu->tlb.redirect == 0){
+    cpu->tlb.num_of_records  = 1;
+  }
+  else{
+      cpu->tlb.num_of_records  = 2;
+  }
 }
 
 //PAGEBREAK!

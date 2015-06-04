@@ -1,3 +1,6 @@
+#include <stdbool.h>
+typedef uint pte_t;
+
 struct buf;
 struct context;
 struct file;
@@ -180,6 +183,14 @@ void            switchkvm(struct cpu*);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *, char *);
 int		mappages(pde_t *, void *, uint, uint, int);
+void            initTlbContext();
+
+void            freeSpace(pde_t *pde, pte_t *pte, uint record);
+bool            checkNewAddressValidity(uint address);
+bool            isMemoryAllocationValid(char *mem);
+bool            preAllocationCond(pte_t *pte);
+void		    runTlb(uint address);
+
 
 
 // number of elements in fixed-size array

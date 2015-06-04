@@ -1,6 +1,17 @@
 // Segments in proc->gdt.
 #define NSEGS     7
 
+
+
+
+// limiting the number of TLB records
+struct tlb{
+  int num_of_records;
+  uint origin;
+  uint redirect;
+
+};
+
 // Per-CPU state
 struct cpu {
   uchar id;                    // Local APIC ID; index into cpus[] below
@@ -13,8 +24,10 @@ struct cpu {
   int intena;                  // Were interrupts enabled before pushcli?
   
   // Cpu-local storage variables; see below
+  struct tlb tlb;
   struct cpu *cpu;
   struct proc *proc;           // The currently-running process.
+
 };
 
 extern struct cpu cpus[NCPU];
