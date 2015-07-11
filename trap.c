@@ -11,6 +11,7 @@
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
+extern pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc); // used in pgfualt
 struct spinlock tickslock;
 uint ticks;
 
@@ -23,7 +24,8 @@ tvinit(void)
     SETGATE(idt[i], 0, SEG_KCODE<<3, vectors[i], 0);
   SETGATE(idt[T_SYSCALL], 1, SEG_KCODE<<3, vectors[T_SYSCALL], DPL_USER);
   
-  initlock(&tickslock, "time");
+  initlock(&tickslock, "time");extern uint vectors[];  // in vectors.S: array of 256 entry pointers
+
 }
 
 void
@@ -36,9 +38,9 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
-  char *mem;  // for use in trap = PGFLT
-  uint a;     // for use in trap = PGFLT
-  pte_t* pte_user;
+//  char *mem;  // for use in trap = PGFLT
+//  uint a;     // for use in trap = PGFLT
+//  pte_t* pte_user;
 
   if(tf->trapno == T_SYSCALL){
     if(proc->killed)
@@ -83,23 +85,37 @@ trap(struct trapframe *tf)
     break;
   //added for assignment 3: handle lazy allocation
     case T_PGFLT:
-        pte_user = walkpgdir(proc->pgdir,(void *)rcr2(),0);
-        if (!pte_user || !(*pte_user & PTE_P)) {
-          mem = kalloc();
-          if (mem == 0) {
-              cprintf("out of memory - bad i kill u now");
-              cprintf("pid %d %s: trap %d err %d on cpu %d "
-                              "eip 0x%x addr 0x%x--kill proc\n",
-                      proc->pid, proc->name, tf->trapno, tf->err, cpu->id, tf->eip,
-                      rcr2());
-              proc->killed = 1;
-              return;
-          }
-          memset(mem, 0, PGSIZE);
-          a = PGROUNDDOWN(rcr2());
-          cprintf("doing lazy allocation\n");
-          mappages(proc->pgdir, (char *) a, PGSIZE, v2p(mem), PTE_W | PTE_U);
+      if (proc) {
+        //check the virtual address is in the process range that is allowed.
+        // and check that the size of the virtual address isn't overlapping the process size
+        if ((PGROUNDDOWN(proc->tf->ebp) > rcr2()) && (PGROUNDDOWN(proc->tf->esp) > rcr2()) && (rcr2() > proc->sz)) {
+          cprintf("problem with virtual address\n");
+          proc->killed = 1;
           return;
+        }
+        runTlb(rcr2());  // rcr2() it's the virtual address
+        break;
+      } else {
+        cprintf("got a page fualt");
+        panic("trap");
+        break;
+//        pte_user = walkpgdir(proc->pgdir,(void *)rcr2(),0);
+//        if (!pte_user || !(*pte_user & PTE_P)) {
+//          mem = kalloc();
+//          if (mem == 0) {
+//              cprintf("out of memory - bad i kill u now");
+//              cprintf("pid %d %s: trap %d err %d on cpu %d "
+//                              "eip 0x%x addr 0x%x--kill proc\n",
+//                      proc->pid, proc->name, tf->trapno, tf->err, cpu->id, tf->eip,
+//                      rcr2());
+//              proc->killed = 1;
+//              return;
+//          }
+//          memset(mem, 0, PGSIZE);
+//          a = PGROUNDDOWN(rcr2());
+//          cprintf("doing lazy allocation\n");
+//          mappages(proc->pgdir, (char *) a, PGSIZE, v2p(mem), PTE_W | PTE_U);
+//          return;
           }
   //PAGEBREAK: 13
   default:

@@ -435,7 +435,7 @@ void runTlb(uint address) {
   pte_t *pte;
 
   if (!checkNewAddressValidity(address)){
-    cprintf("error");
+    //cprintf("error");
     proc->killed = 1;
     return;
   }
@@ -444,8 +444,9 @@ void runTlb(uint address) {
     char * mem;
     mem = kalloc();
     if (!isMemoryAllocationValid(mem)){
-      cprintf("Memory can't be allocated");
-      return;
+      cprintf("Memory can't be allocated\n");
+      exit();
+      //return;
     }
     memset(mem, 0, PGSIZE);
     mappages(proc->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, v2p(mem), PTE_W|PTE_U);
